@@ -4,4 +4,4 @@ Rust Based Android Emulation Utility
 
 > [Under Development]
 
-Release date Dec 28th 2025
+Release date: Dec 27th 2025
