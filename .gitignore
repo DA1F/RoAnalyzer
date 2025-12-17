@@ -1,0 +1,24 @@
+# Build outputs
+/target/
+/debug/
+/release/
+
+# Coverage and profiling
+coverage/
+*.profraw
+*.profdata
+
+# Rust tooling backups
+**/*.rs.bk
+
+# Editor and IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS-generated files
+.DS_Store
+
+# Logs
+*.log
