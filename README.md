@@ -1,6 +1,7 @@
 # RoAnalyzer
+
 Rust Based Android Emulation Utility
 
-> Under Development
+> [Under Development]
 
 Release date Dec 28th 2025
