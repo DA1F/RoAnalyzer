@@ -1,0 +1,278 @@
+use ro_grpc::fs::AdbHelper;
+use std::io::{self, Write};
+use std::path::PathBuf;
+
+struct CliExplorer {
+    adb_fs: AdbHelper,
+    current_path: PathBuf,
+    current_files: Vec<String>,
+}
+
+impl CliExplorer {
+    fn new(device_serial: Option<String>) -> Self {
+        let adb_fs = AdbHelper::new(device_serial);
+        let current_path = PathBuf::from("/sdcard/");
+        Self {
+            adb_fs,
+            current_path,
+            current_files: Vec::new(),
+        }
+    }
+
+    fn refresh(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.current_files = self
+            .adb_fs
+            .list_files(&self.current_path)
+            .unwrap_or_default();
+        Ok(())
+    }
+
+    fn display(&self) {
+        println!("\n{}", "=".repeat(60));
+        println!("📁 Location: {}", self.current_path.display());
+        println!("{}", "-".repeat(60));
+        if self.current_files.is_empty() {
+            println!("(empty directory)");
+        } else {
+            for (idx, file) in self.current_files.iter().enumerate() {
+                println!("{:3}. {}", idx, file);
+            }
+        }
+        println!("{}", "=".repeat(60));
+    }
+
+    fn navigate_to(&mut self, index: usize) -> Result<(), Box<dyn std::error::Error>> {
+        if index >= self.current_files.len() {
+            return Err("Invalid index".into());
+        }
+        let mut new_path = self.current_path.clone();
+        new_path.push(&self.current_files[index]);
+        self.current_path = new_path;
+        self.refresh()?;
+        Ok(())
+    }
+
+    fn go_up(&mut self) {
+        if self.current_path.pop() {
+            let _ = self.refresh();
+        }
+    }
+
+    fn view_file_info(&self, index: usize) -> Result<(), Box<dyn std::error::Error>> {
+        if index >= self.current_files.len() {
+            return Err("Invalid index".into());
+        }
+        let mut file_path = self.current_path.clone();
+        file_path.push(&self.current_files[index]);
+        match self.adb_fs.get_file_info(&file_path) {
+            Ok(info) => {
+                println!("\n📄 File Info:");
+                println!("  Path: {:?}", info.path);
+                println!("  Type: {:?}", info.file_type);
+                println!("  Size: {} bytes", info.size);
+                println!(
+                    "  Permissions: {} ({})",
+                    info.permissions.mode,
+                    info.permissions.octal()
+                );
+                println!(
+                    "  Owner: {}, Group: {}",
+                    info.permissions.owner, info.permissions.group
+                );
+                println!("  Modified: {:?}", info.modified_time);
+                if let Some(accessed) = info.accessed_time {
+                    println!("  Accessed: {:?}", accessed);
+                }
+            }
+            Err(e) => println!("❌ Error: {}", e),
+        }
+        Ok(())
+    }
+
+    fn preview_text(&self, index: usize) -> Result<(), Box<dyn std::error::Error>> {
+        if index >= self.current_files.len() {
+            return Err("Invalid index".into());
+        }
+        let mut file_path = self.current_path.clone();
+        file_path.push(&self.current_files[index]);
+        match self.adb_fs.read_text_file(&file_path) {
+            Ok(content) => {
+                println!("\n📝 Text Preview ({}):", file_path.display());
+                println!("{}", "-".repeat(60));
+                for (line_num, line) in content.lines().take(30).enumerate() {
+                    println!("{:3} | {}", line_num + 1, line);
+                }
+                if content.lines().count() > 30 {
+                    println!("... ({} more lines)", content.lines().count() - 30);
+                }
+                println!("{}", "-".repeat(60));
+            }
+            Err(e) => println!("❌ Error reading file: {}", e),
+        }
+        Ok(())
+    }
+
+    fn preview_binary(&self, index: usize) -> Result<(), Box<dyn std::error::Error>> {
+        if index >= self.current_files.len() {
+            return Err("Invalid index".into());
+        }
+        let mut file_path = self.current_path.clone();
+        file_path.push(&self.current_files[index]);
+        match self.adb_fs.read_file(&file_path) {
+            Ok(data) => {
+                println!("\n🔢 Binary Preview ({}):", file_path.display());
+                println!("{}", "-".repeat(60));
+                println!("Size: {} bytes", data.len());
+                for (i, chunk) in data.chunks(16).take(16).enumerate() {
+                    print!("{:08x}  ", i * 16);
+                    for byte in chunk {
+                        print!("{:02x} ", byte);
+                    }
+                    println!();
+                }
+                if data.len() > 256 {
+                    println!("... ({} more bytes)", data.len() - 256);
+                }
+                println!("{}", "-".repeat(60));
+            }
+            Err(e) => println!("❌ Error reading file: {}", e),
+        }
+        Ok(())
+    }
+}
+
+fn show_help() {
+    println!(
+        r#"
+Commands:
+  <number>     - Navigate to file/folder (e.g., 0, 1, 2)
+  u            - Go up one directory
+  r            - Refresh listing
+  i <number>   - View file info (e.g., i 0)
+  t <number>   - Preview text file (e.g., t 0)
+  b <number>   - Preview binary file (e.g., b 0)
+  cd <path>    - Change directory (e.g., cd /sdcard/DCIM)
+  h            - Show this help
+  q            - Quit
+
+Examples:
+  0            - Navigate to first item
+  i 2          - Show info about third item
+  t 1          - Preview text of second item
+  cd /sdcard   - Go to /sdcard directory
+"#
+    );
+}
+
+#[tokio::main]
+async fn main() {
+    println!("🚀 ADB File Explorer CLI");
+    println!("Type 'h' for help\n");
+
+    let mut explorer = CliExplorer::new(None);
+    let _ = explorer.refresh();
+    explorer.display();
+
+    let stdin = io::stdin();
+    let mut input = String::new();
+
+    loop {
+        print!("> ");
+        io::stdout().flush().unwrap();
+        input.clear();
+
+        if stdin.read_line(&mut input).is_err() {
+            break;
+        }
+
+        let input = input.trim();
+        if input.is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = input.split_whitespace().collect();
+        let cmd = parts.get(0).map(|s| *s).unwrap_or("");
+
+        match cmd {
+            "h" => show_help(),
+            "q" => {
+                println!("Goodbye!");
+                break;
+            }
+            "u" => {
+                explorer.go_up();
+                explorer.display();
+            }
+            "r" => {
+                if let Err(e) = explorer.refresh() {
+                    println!("❌ Error: {}", e);
+                } else {
+                    explorer.display();
+                }
+            }
+            "cd" => {
+                if let Some(path) = parts.get(1) {
+                    explorer.current_path = PathBuf::from(path);
+                    if let Err(e) = explorer.refresh() {
+                        println!("❌ Error: {}", e);
+                        explorer.current_path = PathBuf::from("/sdcard/");
+                        let _ = explorer.refresh();
+                    } else {
+                        explorer.display();
+                    }
+                } else {
+                    println!("Usage: cd <path>");
+                }
+            }
+            "i" => {
+                if let Some(index_str) = parts.get(1) {
+                    if let Ok(index) = index_str.parse::<usize>() {
+                        if let Err(e) = explorer.view_file_info(index) {
+                            println!("❌ Error: {}", e);
+                        }
+                    } else {
+                        println!("Invalid index");
+                    }
+                } else {
+                    println!("Usage: i <index>");
+                }
+            }
+            "t" => {
+                if let Some(index_str) = parts.get(1) {
+                    if let Ok(index) = index_str.parse::<usize>() {
+                        if let Err(e) = explorer.preview_text(index) {
+                            println!("❌ Error: {}", e);
+                        }
+                    } else {
+                        println!("Invalid index");
+                    }
+                } else {
+                    println!("Usage: t <index>");
+                }
+            }
+            "b" => {
+                if let Some(index_str) = parts.get(1) {
+                    if let Ok(index) = index_str.parse::<usize>() {
+                        if let Err(e) = explorer.preview_binary(index) {
+                            println!("❌ Error: {}", e);
+                        }
+                    } else {
+                        println!("Invalid index");
+                    }
+                } else {
+                    println!("Usage: b <index>");
+                }
+            }
+            _ => {
+                if let Ok(index) = cmd.parse::<usize>() {
+                    match explorer.navigate_to(index) {
+                        Ok(()) => explorer.display(),
+                        Err(e) => println!("❌ Error: {}", e),
+                    }
+                } else {
+                    println!("Unknown command: '{}'. Type 'h' for help.", cmd);
+                }
+            }
+        }
+    }
+}

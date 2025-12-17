@@ -1,0 +1,348 @@
+use egui::*;
+use image::ImageReader;
+use ro_grpc::fs::{FileInfo, FileSystem, FileType};
+use std::io::Cursor;
+use std::path::PathBuf;
+
+fn main() -> Result<(), eframe::Error> {
+    let options = eframe::NativeOptions {
+        viewport: ViewportBuilder::default().with_inner_size([1200.0, 800.0]),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "ADB File Explorer",
+        options,
+        Box::new(|_cc| Box::<FileExplorerApp>::default()),
+    )
+}
+
+struct TreeNode {
+    name: String,
+    path: PathBuf,
+    is_dir: bool,
+    expanded: bool,
+    children: Option<Vec<TreeNode>>,
+    file_info: Option<FileInfo>,
+}
+
+// struct FileExplorerApp {
+//     adb_fs: FileSystem,
+//     root_node: Option<TreeNode>,
+//     selected_file_path: Option<PathBuf>,
+//     preview_content: PreviewContent,
+//     error_message: Option<String>,
+// }
+
+// enum PreviewContent {
+//     None,
+//     Text(String),
+//     Binary(Vec<u8>),
+//     Image(ColorImage),
+//     Error(String),
+// }
+
+// impl Default for FileExplorerApp {
+//     fn default() -> Self {
+//         let adb_fs = FileSystem::new(None);
+//         let mut app = Self {
+//             adb_fs,
+//             root_node: None,
+//             selected_file_path: None,
+//             preview_content: PreviewContent::None,
+//             error_message: None,
+//         };
+//         app.load_root();
+//         app
+//     }
+// }
+
+// impl FileExplorerApp {
+//     fn load_root(&mut self) {
+//         match self.adb_fs.list_files_detailed(&PathBuf::from("/")) {
+//             Ok(details) => {
+//                 let children = details
+//                     .into_iter()
+//                     .map(|info| {
+//                         let path = info.path.clone();
+//                         let is_dir = info.file_type == FileType::Directory;
+//                         let name = path
+//                             .file_name()
+//                             .and_then(|n| n.to_str())
+//                             .unwrap_or("?")
+//                             .to_string();
+
+//                         TreeNode {
+//                             name,
+//                             path,
+//                             is_dir,
+//                             expanded: false,
+//                             children: None,
+//                             file_info: Some(info),
+//                         }
+//                     })
+//                     .collect();
+
+//                 self.root_node = Some(TreeNode {
+//                     name: "/".to_string(),
+//                     path: PathBuf::from("/"),
+//                     is_dir: true,
+//                     expanded: true,
+//                     children: Some(children),
+//                     file_info: None,
+//                 });
+//             }
+//             Err(e) => {
+//                 self.error_message = Some(format!("Error loading root: {}", e));
+//             }
+//         }
+//     }
+
+//     fn load_children(&mut self, node_path: &PathBuf) {
+//         match self.adb_fs.list_files_detailed(node_path) {
+//             Ok(details) => {
+//                 let children = details
+//                     .into_iter()
+//                     .map(|info| {
+//                         let path = info.path.clone();
+//                         let is_dir = info.file_type == FileType::Directory;
+//                         let name = path
+//                             .file_name()
+//                             .and_then(|n| n.to_str())
+//                             .unwrap_or("?")
+//                             .to_string();
+
+//                         TreeNode {
+//                             name,
+//                             path,
+//                             is_dir,
+//                             expanded: false,
+//                             children: None,
+//                             file_info: Some(info),
+//                         }
+//                     })
+//                     .collect();
+
+//                 if let Some(root) = &mut self.root_node {
+//                     if let Some(target_node) = Self::find_node_mut(root, node_path) {
+//                         target_node.children = Some(children);
+//                     }
+//                 }
+//             }
+//             Err(e) => {
+//                 self.error_message = Some(format!("Error loading directory: {}", e));
+//             }
+//         }
+//     }
+
+//     fn find_node_mut<'a>(
+//         node: &'a mut TreeNode,
+//         target_path: &PathBuf,
+//     ) -> Option<&'a mut TreeNode> {
+//         if node.path == *target_path {
+//             return Some(node);
+//         }
+
+//         if let Some(ref mut children) = node.children {
+//             for child in children.iter_mut() {
+//                 if let Some(found) = Self::find_node_mut(child, target_path) {
+//                     return Some(found);
+//                 }
+//             }
+//         }
+//         None
+//     }
+
+//     fn load_preview_for_file(&mut self, path: &PathBuf) {
+//         if let Ok(data) = self.adb_fs.read_file(path) {
+//             // Try image first
+//             if let Ok(image_reader) = ImageReader::new(Cursor::new(&data)).with_guessed_format() {
+//                 if let Ok(dynamic_image) = image_reader.decode() {
+//                     let rgba_image = dynamic_image.to_rgba8();
+//                     let (width, height) = rgba_image.dimensions();
+//                     let pixels = rgba_image
+//                         .pixels()
+//                         .map(|p| Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
+//                         .collect();
+
+//                     self.preview_content = PreviewContent::Image(ColorImage {
+//                         size: [width as usize, height as usize],
+//                         pixels,
+//                     });
+//                     return;
+//                 }
+//             }
+
+//             // Try text
+//             if let Ok(text) = String::from_utf8(data.clone()) {
+//                 self.preview_content = PreviewContent::Text(text);
+//             } else {
+//                 self.preview_content = PreviewContent::Binary(data);
+//             }
+//         } else {
+//             self.preview_content = PreviewContent::Error("Could not read file".to_string());
+//         }
+//     }
+
+//     fn ui_tree_node(
+//         ui: &mut Ui,
+//         node: &mut TreeNode,
+//         clicked_file: &mut Option<PathBuf>,
+//         double_clicked_dir: &mut Option<PathBuf>,
+//         load_children_for: &mut Option<PathBuf>,
+//     ) {
+//         if node.is_dir {
+//             let collapsing = ui.collapsing(format!("📁 {}", node.name), |ui| {
+//                 if let Some(ref mut children) = node.children {
+//                     for child in children.iter_mut() {
+//                         Self::ui_tree_node(
+//                             ui,
+//                             child,
+//                             clicked_file,
+//                             double_clicked_dir,
+//                             load_children_for,
+//                         );
+//                     }
+//                 }
+//             });
+
+//             // Toggle expansion state when header is clicked
+//             if collapsing.header_response.clicked() {
+//                 node.expanded = !node.expanded;
+//                 if node.expanded && node.children.is_none() {
+//                     *load_children_for = Some(node.path.clone());
+//                 }
+//             }
+//         } else {
+//             let response = ui.selectable_label(
+//                 false,
+//                 format!(
+//                     "📄 {} ({}B)",
+//                     node.name,
+//                     node.file_info.as_ref().map(|f| f.size).unwrap_or(0)
+//                 ),
+//             );
+
+//             if response.clicked() {
+//                 *clicked_file = Some(node.path.clone());
+//             }
+
+//             if response.double_clicked() {
+//                 if let Some(file_info) = &node.file_info {
+//                     if file_info.file_type == FileType::Directory {
+//                         *double_clicked_dir = Some(node.path.clone());
+//                     }
+//                 }
+//             }
+//         }
+//     }
+// }
+
+impl eframe::App for FileExplorerApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let mut clicked_file: Option<PathBuf> = None;
+        let mut double_clicked_dir: Option<PathBuf> = None;
+        let mut load_children_for: Option<PathBuf> = None;
+
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("📁 ADB File Explorer");
+                if ui.button("🔄 Reload Root").clicked() {
+                    self.load_root();
+                }
+            });
+
+            if let Some(error) = &self.error_message {
+                ui.colored_label(Color32::RED, error);
+            }
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.columns(2, |columns| {
+                // Left column: tree view
+                {
+                    let tree_ui = &mut columns[0];
+                    tree_ui.label("📂 File Tree:");
+                    egui::ScrollArea::vertical()
+                        .max_height(f32::INFINITY)
+                        .show(tree_ui, |ui| {
+                            if let Some(ref mut root) = self.root_node {
+                                FileExplorerApp::ui_tree_node(
+                                    ui,
+                                    root,
+                                    &mut clicked_file,
+                                    &mut double_clicked_dir,
+                                    &mut load_children_for,
+                                );
+                            }
+                        });
+                }
+
+                // Right column: preview
+                {
+                    let preview_ui = &mut columns[1];
+                    preview_ui.label("👁 Preview:");
+                    egui::ScrollArea::vertical()
+                        .max_height(f32::INFINITY)
+                        .show(preview_ui, |ui| match &self.preview_content {
+                            PreviewContent::None => {
+                                ui.label("Select a file to preview");
+                            }
+                            PreviewContent::Text(text) => {
+                                ui.label("📝 Text Content:");
+                                egui::ScrollArea::vertical()
+                                    .max_height(500.0)
+                                    .show(ui, |ui| {
+                                        ui.label(egui::RichText::new(text.as_str()).monospace());
+                                    });
+                            }
+                            PreviewContent::Binary(data) => {
+                                ui.label(format!("🔢 Binary Content ({} bytes):", data.len()));
+                                ui.label(egui::RichText::new(format_hex(data, 256)).monospace());
+                            }
+                            PreviewContent::Image(_) => {
+                                ui.label("🖼 Image Preview");
+                                ui.label(
+                                    "Image display: To render images, additional setup required",
+                                );
+                            }
+                            PreviewContent::Error(e) => {
+                                ui.colored_label(Color32::RED, format!("Error: {}", e));
+                            }
+                        });
+                }
+            });
+        });
+
+        // Handle file selection
+        if let Some(file_path) = clicked_file {
+            self.selected_file_path = Some(file_path.clone());
+            self.load_preview_for_file(&file_path);
+        }
+
+        // Load children for expanded folder
+        if let Some(path) = load_children_for {
+            self.load_children(&path);
+        }
+
+        // Initial load
+        if self.root_node.is_none() {
+            self.load_root();
+        }
+    }
+}
+
+fn format_hex(data: &[u8], limit: usize) -> String {
+    let mut result = String::new();
+    for (i, chunk) in data.chunks(16).take(limit / 16).enumerate() {
+        result.push_str(&format!("{:08x}  ", i * 16));
+        for byte in chunk {
+            result.push_str(&format!("{:02x} ", byte));
+        }
+        result.push('\n');
+    }
+    if data.len() > limit {
+        result.push_str(&format!("... ({} more bytes)", data.len() - limit));
+    }
+    result
+}

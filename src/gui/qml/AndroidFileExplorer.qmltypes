@@ -1,0 +1,29 @@
+import QtQuick.tooling 1.2
+
+Module {
+    Component {
+        name: "AndroidFileExplorer"
+        prototype: "QObject"
+        exports: ["AndroidFileExplorer/AndroidFileExplorer 1.0"]
+        exportMetaObjectRevisions: [256]
+        
+        // Properties
+        Property { name: "json_data"; type: "QString" }
+        Property { name: "current_path"; type: "QString" }
+        
+        // Signals
+        Signal { name: "path_changed" }
+        Signal { name: "json_data_changed" }
+        
+        // Methods
+        Method { name: "refresh" }
+        Method { name: "up" }
+        Method { name: "cd"
+            Parameter { name: "path"; type: "QString" }
+        }
+        Method { 
+            name: "print_lol"
+            Parameter { name: "json_data"; type: "QString" }
+        }
+    }
+}

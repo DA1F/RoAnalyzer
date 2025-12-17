@@ -1,0 +1,5 @@
+# Proto file discription
+
+!!! Warning
+The proto file changes from time to time and it depends on the emulator version
+use the proto file from your emulator which usually can be found under `~/Library/Android/sdk/emulator/lib/emulator_controller.proto` and change the name for the nessesary grpc services.

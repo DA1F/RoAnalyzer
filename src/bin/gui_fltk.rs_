@@ -1,0 +1,310 @@
+use fltk::{
+    app, button::Button, frame::Frame, group::Flex, prelude::*, text::TextDisplay, tree::Tree,
+    tree::TreeItem, window::Window,
+};
+use ro_grpc::fs::{AdbHelper, FileType};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::rc::Rc;
+
+struct FileExplorerWindow {
+    adb_fs: Rc<RefCell<AdbHelper>>,
+}
+
+impl FileExplorerWindow {
+    fn format_hex(data: &[u8], limit: usize) -> String {
+        let mut result = String::new();
+        for (i, chunk) in data.chunks(16).take(limit / 16).enumerate() {
+            result.push_str(&format!("{:08x}  ", i * 16));
+            for byte in chunk {
+                result.push_str(&format!("{:02x} ", byte));
+            }
+            result.push('\n');
+        }
+        if data.len() > limit {
+            result.push_str(&format!("\n... ({} more bytes)", data.len() - limit));
+        }
+        result
+    }
+
+    fn get_tree_path(item: &TreeItem) -> String {
+        // Build full path from tree item hierarchy
+        let label = item.label().unwrap_or_default();
+        let parts: Vec<&str> = label.split_whitespace().collect();
+        let name = if parts.len() >= 2 { parts[1] } else { &label };
+
+        if let Some(parent) = item.parent() {
+            if parent.label().is_some() {
+                format!("{}/{}", Self::get_tree_path(&parent), name)
+            } else {
+                name.to_string()
+            }
+        } else {
+            name.to_string()
+        }
+    }
+}
+
+fn main() {
+    let app = app::App::default();
+    let adb_fs = Rc::new(RefCell::new(AdbHelper::new(None)));
+
+    // Create main window
+    let mut wind = Window::default()
+        .with_size(1200, 800)
+        .with_label("ADB File Explorer (FLTK)");
+
+    // Main vertical layout
+    let mut main_col = Flex::default().with_size(1200, 800).column();
+
+    // Top toolbar
+    let mut toolbar = Flex::default().row();
+    let mut refresh_btn = Button::default().with_label("🔄 Refresh");
+    let mut status_frame = Frame::default().with_label("Ready");
+    status_frame.set_label_size(12);
+    toolbar.fixed(&refresh_btn, 100);
+    toolbar.end();
+
+    // Main content area (horizontal split)
+    let mut content = Flex::default().row();
+
+    // Left: Tree view
+    let mut tree = Tree::default();
+    tree.set_show_root(true);
+    tree.set_root_label("/sdcard");
+
+    // Right: Preview text
+    let mut preview = TextDisplay::default();
+    preview.set_buffer(fltk::text::TextBuffer::default());
+    preview
+        .buffer()
+        .unwrap()
+        .set_text("Select a file to preview...");
+
+    content.end();
+    content.fixed(&tree, 500);
+
+    main_col.fixed(&toolbar, 40);
+    main_col.end();
+
+    wind.end();
+    wind.show();
+
+    // Create a path map to track tree item paths
+    let path_map = Rc::new(RefCell::new(HashMap::<String, String>::new()));
+
+    // Function to load directory into tree
+    let load_directory = {
+        let adb_fs = adb_fs.clone();
+        let path_map = path_map.clone();
+
+        move |tree: &mut Tree, tree_path: &str, fs_path: &str| {
+            let fs_path_buf = PathBuf::from(fs_path);
+            match adb_fs.borrow().list_files_detailed(&fs_path_buf) {
+                Ok(files) => {
+                    for file_info in files {
+                        let name = file_info
+                            .path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("?");
+
+                        let icon = if file_info.file_type == FileType::Directory {
+                            "📁"
+                        } else {
+                            "📄"
+                        };
+
+                        let label = format!("{} {} ({}B)", icon, name, file_info.size);
+                        let item_tree_path = format!("{}/{}", tree_path, name);
+                        let item_fs_path = file_info.path.to_string_lossy().to_string();
+
+                        tree.add(&item_tree_path);
+
+                        if let Some(mut item) = tree.find_item(&item_tree_path) {
+                            item.set_label(&label);
+                        }
+
+                        // Store mapping from tree path to filesystem path
+                        path_map.borrow_mut().insert(item_tree_path, item_fs_path);
+                    }
+                    true
+                }
+                Err(_) => false,
+            }
+        }
+    };
+
+    // Load root directory on start
+    let mut tree_clone = tree.clone();
+    let mut status_clone = status_frame.clone();
+    {
+        tree_clone.clear();
+        tree_clone.set_root_label("/sdcard");
+
+        if load_directory(&mut tree_clone, "/sdcard", "/sdcard/") {
+            status_clone.set_label("Loaded /sdcard/");
+        } else {
+            status_clone.set_label("Error loading /sdcard/");
+        }
+    }
+
+    // Refresh button callback
+    let load_directory_clone = {
+        let adb_fs = adb_fs.clone();
+        let path_map = path_map.clone();
+
+        move |tree: &mut Tree, tree_path: &str, fs_path: &str| {
+            let fs_path_buf = PathBuf::from(fs_path);
+            match adb_fs.borrow().list_files_detailed(&fs_path_buf) {
+                Ok(files) => {
+                    for file_info in files {
+                        let name = file_info
+                            .path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("?");
+
+                        let icon = if file_info.file_type == FileType::Directory {
+                            "📁"
+                        } else {
+                            "📄"
+                        };
+
+                        let label = format!("{} {} ({}B)", icon, name, file_info.size);
+                        let item_tree_path = format!("{}/{}", tree_path, name);
+                        let item_fs_path = file_info.path.to_string_lossy().to_string();
+
+                        tree.add(&item_tree_path);
+
+                        if let Some(mut item) = tree.find_item(&item_tree_path) {
+                            item.set_label(&label);
+                        }
+
+                        path_map.borrow_mut().insert(item_tree_path, item_fs_path);
+                    }
+                    true
+                }
+                Err(_) => false,
+            }
+        }
+    };
+
+    let mut tree_clone2 = tree.clone();
+    let mut status_clone2 = status_frame.clone();
+    refresh_btn.set_callback(move |_| {
+        tree_clone2.clear();
+        tree_clone2.set_root_label("/sdcard");
+
+        if load_directory_clone(&mut tree_clone2, "/sdcard", "/sdcard/") {
+            status_clone2.set_label("Refreshed /sdcard/");
+        } else {
+            status_clone2.set_label("Error refreshing /sdcard/");
+        }
+    });
+
+    // Tree expansion callback - load children when folder is opened
+    let adb_fs_for_expand = adb_fs.clone();
+    let path_map_for_expand = path_map.clone();
+    let mut tree_for_expand = tree.clone();
+    let mut status_for_expand = status_frame.clone();
+
+    tree.set_callback(move |t| {
+        use fltk::tree::TreeReason;
+
+        match t.callback_reason() {
+            TreeReason::Opened => {
+                // User opened a folder - load its children if not already loaded
+                if let Some(item) = t.callback_item() {
+                    let tree_path_clean = t.item_pathname(&item).unwrap_or_default();
+
+                    // Check if this folder already has children loaded
+                    if item.children() == 0 {
+                        // Get filesystem path from map
+                        if let Some(fs_path) =
+                            path_map_for_expand.borrow().get(&tree_path_clean).cloned()
+                        {
+                            // Load children
+                            let fs_path_buf = PathBuf::from(&fs_path);
+                            match adb_fs_for_expand.borrow().list_files_detailed(&fs_path_buf) {
+                                Ok(files) => {
+                                    for file_info in files {
+                                        let name = file_info
+                                            .path
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("?");
+
+                                        let icon = if file_info.file_type == FileType::Directory {
+                                            "📁"
+                                        } else {
+                                            "📄"
+                                        };
+
+                                        let label =
+                                            format!("{} {} ({}B)", icon, name, file_info.size);
+                                        let item_tree_path =
+                                            format!("{}/{}", tree_path_clean, name);
+                                        let item_fs_path =
+                                            file_info.path.to_string_lossy().to_string();
+
+                                        tree_for_expand.add(&item_tree_path);
+
+                                        if let Some(mut new_item) =
+                                            tree_for_expand.find_item(&item_tree_path)
+                                        {
+                                            new_item.set_label(&label);
+                                        }
+
+                                        path_map_for_expand
+                                            .borrow_mut()
+                                            .insert(item_tree_path, item_fs_path);
+                                    }
+                                    status_for_expand
+                                        .set_label(&format!("Loaded: {}", tree_path_clean));
+                                }
+                                Err(e) => {
+                                    status_for_expand.set_label(&format!("Error: {}", e));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            TreeReason::Selected => {
+                // User selected an item - try to preview if it's a file
+                if let Some(item) = t.callback_item() {
+                    let tree_path = t.item_pathname(&item).unwrap_or_default();
+
+                    if let Some(fs_path) = path_map_for_expand.borrow().get(&tree_path).cloned() {
+                        let fs_path_buf = PathBuf::from(&fs_path);
+
+                        // Try to read as file
+                        match adb_fs_for_expand.borrow().read_file(&fs_path_buf) {
+                            Ok(data) => {
+                                if let Ok(text) = String::from_utf8(data.clone()) {
+                                    preview.buffer().unwrap().set_text(&text);
+                                    status_for_expand
+                                        .set_label(&format!("Loaded file: {}", tree_path));
+                                } else {
+                                    let hex = FileExplorerWindow::format_hex(&data, 512);
+                                    preview.buffer().unwrap().set_text(&hex);
+                                    status_for_expand
+                                        .set_label(&format!("Binary file: {}", tree_path));
+                                }
+                            }
+                            Err(_) => {
+                                // Probably a directory, not an error
+                                preview.buffer().unwrap().set_text("Directory selected");
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    });
+
+    app.run().unwrap();
+}

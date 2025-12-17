@@ -1,0 +1,107 @@
+use cstr::cstr;
+use qmetaobject::prelude::*;
+use qmetaobject::QString;
+use ro_grpc::fs::AdbHelper;
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+// Global cache for file listings
+static FILE_CACHE: Mutex<String> = Mutex::new(String::new());
+
+// Thread-local storage for ADB filesystem and cache
+thread_local! {
+    static ADB_FS: RefCell<AdbHelper> = RefCell::new(AdbHelper::new(None));
+}
+
+pub fn get_files_for_path(path: &str) -> QString {
+    let (files, _status) = list_files_impl(path);
+    files.into()
+}
+
+#[derive(QObject, Default)]
+pub struct FileExplorer {
+    base: qt_base_class!(trait QObject),
+    current_path: qt_property!(QString; NOTIFY path_changed),
+    path_changed: qt_signal!(),
+    file_list: qt_property!(QString; NOTIFY files_changed),
+    files_changed: qt_signal!(),
+    status_message: qt_property!(QString; NOTIFY status_changed),
+    status_changed: qt_signal!(),
+}
+
+impl FileExplorer {}
+
+pub fn list_files_impl(path: &str) -> (String, String) {
+    ADB_FS.with(|adb| match adb.borrow().list_files_detailed(path) {
+        Ok(files) => {
+            let count = files.len();
+            let mut result = String::new();
+            for file in files {
+                let file_type = match file.file_type {
+                    ro_grpc::fs::FileType::Directory => "[D]",
+                    ro_grpc::fs::FileType::File => "[F]",
+                    _ => "[?]",
+                };
+                let name = file.path.file_name().unwrap_or_default().to_string_lossy();
+                let size = if file.size > 1024 * 1024 {
+                    format!("{}MB", file.size / (1024 * 1024))
+                } else if file.size > 1024 {
+                    format!("{}KB", file.size / 1024)
+                } else {
+                    format!("{}B", file.size)
+                };
+                result.push_str(&format!("{} {:40} {:>10}\n", file_type, name, size));
+            }
+            (result, format!("Loaded {} items", count))
+        }
+        Err(e) => (
+            format!("Error: {}", e),
+            format!("Error reading {}: {}", path, e),
+        ),
+    })
+}
+
+fn main() {
+    // Pre-load root directory files
+    let (root_files, root_status) = list_files_impl("/");
+
+    // Print the actual files for debugging
+    eprintln!("Pre-loaded {}. Files:\n{}", root_status, root_files);
+
+    // Cache the results
+    let _ = FILE_CACHE.lock().map(|mut cache| {
+        *cache = root_files.clone();
+    });
+
+    // Register the Rust struct as a QML type
+    qml_register_type::<FileExplorer>(cstr!("FileExplorer"), 1, 0, cstr!("FileExplorer"));
+
+    let mut engine = QmlEngine::new();
+
+    // Create FileExplorer instance with initial data
+    let explorer = QObjectBox::new(FileExplorer {
+        base: Default::default(),
+        current_path: "/".into(),
+        file_list: root_files.into(),
+        status_message: root_status.into(),
+        path_changed: Default::default(),
+        files_changed: Default::default(),
+        status_changed: Default::default(),
+    });
+
+    // Set the explorer as a context property so QML can access it
+    engine.set_object_property("explorer".into(), explorer.pinned());
+
+    // Load QML from file
+    let qml_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/bin/qt_qmeta.qml");
+
+    if qml_path.exists() {
+        // Load the QML
+        engine.load_file(qml_path.to_string_lossy().to_string().into());
+    } else {
+        eprintln!("QML file not found at: {:?}", qml_path);
+    }
+
+    engine.exec();
+}

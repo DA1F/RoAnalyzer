@@ -1,0 +1,61 @@
+[package]
+name = "ro_grpc"
+version = "0.1.0"
+edition = "2021"
+authors = ["(your name) <you@example.com>"]
+description = "gRPC client library for controlling Android emulator (screen, clipboard, touch)"
+homepage = ""
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "ro_grpc"
+crate-type = ["lib"]
+
+# [[bin]]
+# name = "ro-grpc-cli"
+# path = "src/bin/cli.rs"
+
+# [[bin]]
+# name = "ro-grpc-cli-explorer"
+# path = "src/bin/cli_explorer.rs"
+
+# [[bin]]
+# name = "ro-grpc-gui"
+# path = "src/bin/gui.rs"
+
+[[bin]]
+name = "ro-grpc-main-gui"
+path = "src/gui/main.rs"
+
+[dependencies]
+tonic = { version = "0.10", features = ["transport", "codegen", "prost"] }
+portable-pty = "0.9.0"
+ffmpeg-next = "8.0.0"
+prost = "0.12"
+prost-types = "0.12"
+tokio = { version = "1.33", features = ["full"] }
+bytes = "1"
+futures = "0.3.31"
+nix = { version = "0.30.1", features = ["fs"] }
+libc = "0.2.177"
+config = "0.15.19"
+chrono = "0.4.42"
+tempfile = "3"
+anyhow = "1.0.100"
+# GUI dependencies
+egui = "0.27"
+eframe = "0.27"
+image = "0.25"
+fltk = { version = "1.5.22", features = ["fltk-bundled"] }
+cstr = "0.2"
+qmetaobject = "0.2.10"
+serde_json = "1"
+serde = "1.0.228"
+
+
+[build-dependencies]
+tonic-build = { version = "0.10", features = ["prost"] }
+protoc-bin-vendored = "3.2"
+
+[profile.release]
+# ...existing code...
